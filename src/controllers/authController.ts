@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import UserModel from "../models/User";
-import SessionModel from "../models/Session";
+import SessionModel, { hashToken } from "../models/Session";
 import { registerSchema, loginSchema } from "../validators/auth";
 import { hash, compare } from "../utils/hash";
 import { signAccessToken, makeRefreshToken } from "../utils/jwt";
@@ -16,7 +16,6 @@ export async function register(req: Request, res: Response) {
   }
 
   const { email, password, name } = parsed.data;
-
   const existing = await UserModel.findOne({ email });
   if (existing) {
     return res.status(409).json({ status: "error", error: { code: "USER_EXISTS", message: "Email already registered" } });
@@ -25,10 +24,9 @@ export async function register(req: Request, res: Response) {
   const passwordHash = await hash(password);
   const user = await UserModel.create({ email, name, passwordHash });
 
-  // issue tokens
   const accessToken = signAccessToken(user._id.toString(), user.roles);
   const refreshToken = makeRefreshToken();
-  const refreshHash = await hash(refreshToken);
+  const refreshHash = hashToken(refreshToken);
   const expiresAt = new Date(Date.now() + REFRESH_EXPIRES_DAYS * 24 * 60 * 60 * 1000);
 
   await SessionModel.create({ userId: user._id, refreshTokenHash: refreshHash, ip: req.ip, userAgent: req.get("user-agent"), expiresAt });
@@ -58,7 +56,7 @@ export async function login(req: Request, res: Response) {
 
   const accessToken = signAccessToken(user._id.toString(), user.roles);
   const refreshToken = makeRefreshToken();
-  const refreshHash = await hash(refreshToken);
+  const refreshHash = hashToken(refreshToken);
   const expiresAt = new Date(Date.now() + REFRESH_EXPIRES_DAYS * 24 * 60 * 60 * 1000);
 
   await SessionModel.create({ userId: user._id, refreshTokenHash: refreshHash, ip: req.ip, userAgent: req.get("user-agent"), expiresAt });
@@ -77,32 +75,27 @@ export async function login(req: Request, res: Response) {
 }
 
 export async function refresh(req: Request, res: Response) {
-  const token = req.cookies[COOKIE_NAME];
+  const token = req.cookies[COOKIE_NAME] || req.body.refreshToken || req.headers["x-refresh-token"];
   if (!token) return res.status(401).json({ status: "error", error: { code: "NO_REFRESH_TOKEN", message: "Refresh token missing" } });
 
-  // find matching session by hashing provided token and comparing
-  const sessions = await SessionModel.find({ expiresAt: { $gt: new Date() } });
+  const hashed = hashToken(token);
+  const session = await SessionModel.findOne({ refreshTokenHash: hashed });
+  if (!session) return res.status(401).json({ status: "error", error: { code: "INVALID_REFRESH", message: "Refresh token invalid" } });
 
-  // For performance, in production we'd store hashed token and search directly; here we compare
-  let found: any = null;
-  for (const s of sessions) {
-    const match = await compare(token, s.refreshTokenHash);
-    if (match) {
-      found = s;
-      break;
-    }
+  if (session.expiresAt < new Date()) {
+    await session.deleteOne();
+    return res.status(401).json({ status: "error", error: { code: "EXPIRED_REFRESH", message: "Refresh token expired" } });
   }
 
-  if (!found) return res.status(401).json({ status: "error", error: { code: "INVALID_REFRESH", message: "Refresh token invalid" } });
-
-  // rotate tokens: issue new refresh token
+  // Rotate refresh token
   const newRefresh = makeRefreshToken();
-  const newHash = await hash(newRefresh);
-  found.refreshTokenHash = newHash;
-  found.expiresAt = new Date(Date.now() + REFRESH_EXPIRES_DAYS * 24 * 60 * 60 * 1000);
-  await found.save();
+  const newHash = hashToken(newRefresh);
+  session.refreshTokenHash = newHash;
+  session.expiresAt = new Date(Date.now() + REFRESH_EXPIRES_DAYS * 24 * 60 * 60 * 1000);
+  await session.save();
 
-  const accessToken = signAccessToken(found.userId.toString());
+  const accessToken = signAccessToken(session.userId.toString());
+
   res.cookie(COOKIE_NAME, newRefresh, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -116,18 +109,8 @@ export async function refresh(req: Request, res: Response) {
 export async function logout(req: Request, res: Response) {
   const token = req.cookies[COOKIE_NAME];
   if (token) {
-    // remove session(s) matching this token
-    const sessions = await SessionModel.find({});
-    for (const s of sessions) {
-      // compare and delete
-      // NOTE: scanning all sessions is not optimal — use hashed lookup in production
-      // but acceptable for MVP
-      // eslint-disable-next-line no-await-in-loop
-      const match = await compare(token, s.refreshTokenHash);
-      if (match) {
-        await s.deleteOne();
-      }
-    }
+    const hashed = hashToken(token);
+    await SessionModel.deleteMany({ refreshTokenHash: hashed });
   }
 
   res.clearCookie(COOKIE_NAME);

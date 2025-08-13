@@ -4,13 +4,10 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import morgan from "morgan";
 
-import { connectDB } from "./db";
 import authRoutes from "./routes/auth";
 import tasksRoutes from "./routes/tasks";
 import { errorHandler } from "./middleware/errorHandler";
 import { rateLimiter } from "./middleware/rateLimiter";
-
-connectDB();
 
 const app = express();
 app.use(helmet());

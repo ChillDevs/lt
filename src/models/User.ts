@@ -11,6 +11,7 @@ export interface IUser extends Document {
   };
   createdAt: Date;
   updatedAt: Date;
+  lastLoginAt?: Date;
 }
 
 const UserSchema = new Schema<IUser>(
@@ -19,7 +20,8 @@ const UserSchema = new Schema<IUser>(
     name: { type: String },
     passwordHash: { type: String, required: true },
     roles: { type: [String], default: ["user"] },
-    preferences: { type: Object, default: {} }
+    preferences: { type: Object, default: {} },
+    lastLoginAt: { type: Date }, 
   },
   { timestamps: true }
 );
