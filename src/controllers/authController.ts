@@ -76,15 +76,38 @@ export async function login(req: Request, res: Response) {
 
 export async function refresh(req: Request, res: Response) {
   const token = req.cookies[COOKIE_NAME] || req.body.refreshToken || req.headers["x-refresh-token"];
-  if (!token) return res.status(401).json({ status: "error", error: { code: "NO_REFRESH_TOKEN", message: "Refresh token missing" } });
+  if (!token) {
+    return res.status(401).json({
+      status: "error",
+      error: { code: "NO_REFRESH_TOKEN", message: "Refresh token missing" }
+    });
+  }
 
   const hashed = hashToken(token);
   const session = await SessionModel.findOne({ refreshTokenHash: hashed });
-  if (!session) return res.status(401).json({ status: "error", error: { code: "INVALID_REFRESH", message: "Refresh token invalid" } });
+  if (!session) {
+    return res.status(401).json({
+      status: "error",
+      error: { code: "INVALID_REFRESH", message: "Refresh token invalid" }
+    });
+  }
 
   if (session.expiresAt < new Date()) {
     await session.deleteOne();
-    return res.status(401).json({ status: "error", error: { code: "EXPIRED_REFRESH", message: "Refresh token expired" } });
+    return res.status(401).json({
+      status: "error",
+      error: { code: "EXPIRED_REFRESH", message: "Refresh token expired" }
+    });
+  }
+
+  // Fetch user info
+  const user = await UserModel.findById(session.userId);
+  if (!user) {
+    await session.deleteOne();
+    return res.status(401).json({
+      status: "error",
+      error: { code: "USER_NOT_FOUND", message: "User no longer exists" }
+    });
   }
 
   // Rotate refresh token
@@ -94,7 +117,7 @@ export async function refresh(req: Request, res: Response) {
   session.expiresAt = new Date(Date.now() + REFRESH_EXPIRES_DAYS * 24 * 60 * 60 * 1000);
   await session.save();
 
-  const accessToken = signAccessToken(session.userId.toString());
+  const accessToken = signAccessToken(user._id.toString(), user.roles);
 
   res.cookie(COOKIE_NAME, newRefresh, {
     httpOnly: true,
@@ -103,7 +126,13 @@ export async function refresh(req: Request, res: Response) {
     maxAge: REFRESH_EXPIRES_DAYS * 24 * 60 * 60 * 1000
   });
 
-  return res.json({ status: "ok", data: { accessToken } });
+  return res.json({
+    status: "ok",
+    data: {
+      accessToken,
+      user: { id: user._id, email: user.email, name: user.name }
+    }
+  });
 }
 
 export async function logout(req: Request, res: Response) {
